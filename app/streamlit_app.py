@@ -1,41 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 응고인자 투여 설계 — Streamlit 버전
-실행:  pip install streamlit numpy scipy matplotlib
+실행:  pip install streamlit numpy scipy pandas plotly
        streamlit run streamlit_app.py
 """
-import json, numpy as np, streamlit as st
-import matplotlib; matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib import font_manager as fm
+import json, os, numpy as np, pandas as pd, streamlit as st
+import plotly.graph_objects as go
 from scipy.optimize import minimize
 
 st.set_page_config(page_title="응고인자 투여 설계", layout="wide")
 
-# ---------- 한글 폰트 ----------
-import glob
-
-def _setup_korean_font():
-    cands = []
-    for pat in ("/usr/share/fonts/truetype/nanum/Nanum*.ttf",
-                "/usr/share/fonts/**/NanumGothic*.ttf",
-                "/usr/share/fonts/**/NotoSansCJK*.ot[fc]",
-                "/usr/share/fonts/**/NotoSansKR*.[ot]tf",
-                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                "C:/Windows/Fonts/malgun.ttf",
-                "/System/Library/Fonts/AppleSDGothicNeo.ttc"):
-        cands += sorted(glob.glob(pat, recursive=True))
-    for _p in cands:
-        try:
-            fm.fontManager.addfont(_p)
-            plt.rcParams["font.family"] = fm.FontProperties(fname=_p).get_name()
-            return True
-        except Exception:
-            continue
-    return False
-
-_setup_korean_font()
-plt.rcParams["axes.unicode_minus"] = False
+# 그래프는 브라우저가 그리므로 서버에 한글 폰트가 없어도 글자가 깨지지 않습니다.
+KRFONT = "Malgun Gothic, Apple SD Gothic Neo, NanumGothic, Noto Sans KR, sans-serif"
 
 # ---------- 색 (다크 모드) ----------
 BG   = "#1F1418"     # 페이지 바탕
@@ -45,14 +21,11 @@ MUTE = "#B9A9A6"     # 흐린 글자
 OX   = "#E0808E"     # 예측 농도 곡선
 TEAL = "#5AA3A6"     # 목표 범위
 AMB  = "#D9A24A"
-GRAY = "#9A8F88"     # 보정 전 집단 예측
+GRAY = "#9A8F88"     # 흐린 글자
+GHOST= "#6E625E"     # 보정 전 집단 예측 (유령선)
 LINE = "#4A3138"     # 구분선
 
-plt.rcParams.update({
-    "figure.facecolor": BG, "axes.facecolor": BG, "savefig.facecolor": BG,
-    "text.color": INK, "axes.labelcolor": MUTE, "axes.edgecolor": LINE,
-    "xtick.color": MUTE, "ytick.color": MUTE, "grid.color": LINE,
-})
+
 
 import os
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +70,23 @@ def conc(P, doses, infs, t):
             P["A"]/P["al"]*(np.exp(-P["al"]*(dt[m]-u[m])) - np.exp(-P["al"]*dt[m])) +
             P["B"]/P["be"]*(np.exp(-P["be"]*(dt[m]-u[m])) - np.exp(-P["be"]*dt[m])))
     return c
+
+def period_at(t):
+    for per in PERIODS:
+        if per["t0"] <= t < per["t1"]: return per
+    return PERIODS[-1]
+
+def envelope(P, doses, infs, horizon):
+    """투여 간격마다 최고점·최저점을 뽑아 두 곡선으로 잇는다."""
+    ts = sorted({0.0, float(horizon)} | {d["t"] for d in doses if d["t"] < horizon})
+    if len(ts) < 2: return None
+    pt, pc, tt, tc = [], [], [], []
+    for a, b in zip(ts[:-1], ts[1:]):
+        seg = np.linspace(a, b, 80)
+        cc = conc(P, doses, infs, seg)
+        pt.append(float(seg[cc.argmax()])); pc.append(float(cc.max()))
+        tt.append(float(seg[cc.argmin()])); tc.append(float(cc.min()))
+    return np.array(pt), np.array(pc), np.array(tt), np.array(tc)
 
 # ---------- 처방 설계 ----------
 TAUS = [2, 3, 4, 6, 8, 12, 24]
@@ -241,24 +231,97 @@ with c2:
         col.metric(f"{per['name']} · 목표 {per['lo']:.2f}–{per['hi']:.2f}",
                    state, f"예측 {mn:.2f} – {mx:.2f} IU/mL", delta_color="off")
 
-    fig, ax = plt.subplots(figsize=(11, 3.9))
+    # ---------- 보기 구간 ----------
+    opts = ["전체"] + [p_["name"] for p_ in PERIODS if p_["t0"] < horizon] + ["직접 지정"]
+    pick = st.radio("보기 구간", opts, horizontal=True, label_visibility="collapsed")
+    if pick == "직접 지정":
+        xr = st.slider("보기 범위 (시간)", 0.0, float(horizon),
+                       (0.0, min(24.0, float(horizon))), 0.5, label_visibility="collapsed")
+    elif pick == "전체":
+        xr = (0.0, float(horizon))
+    else:
+        pr = next(p_ for p_ in PERIODS if p_["name"] == pick)
+        xr = (float(pr["t0"]), float(min(pr["t1"], horizon)))
+    st.caption("끌어서 확대 · 아래 미니맵으로 이동 · 두 번 눌러 원래대로")
+
+    env = envelope(P, doses, infs, horizon) if mode == "bolus" else None
+    ymax = max(1.25, float(cs.max()) * 1.12)
+    # 좁게 볼수록 실제 톱니를, 넓게 볼수록 최고–최저 띠를 앞세운다
+    zoomed = (xr[1] - xr[0]) <= 48
+
+    fig = go.Figure()
     for per in PERIODS:
         if per["t0"] >= horizon: continue
         t1 = min(per["t1"], horizon)
-        ax.fill_between([per["t0"], t1], per["lo"], per["hi"], color=TEAL, alpha=.20, lw=0)
-        ax.hlines([per["lo"], per["hi"]], per["t0"], t1, color=TEAL, lw=1.1, alpha=.55)
-        if per["t0"] > 0: ax.axvline(per["t0"], color=LINE, lw=1, ls=(0, (3, 3)))
-        ax.text((per["t0"]+t1)/2, 1.19, per["name"], ha="center", fontsize=10, color=TEAL)
-    if cp is not None: ax.plot(grid, cp, color=GRAY, lw=1.5, ls=(0, (5, 4)), label="보정 전 집단 예측")
-    ax.plot(grid, cs, color=OX, lw=2.2, label="예측 농도")
-    if obs: ax.scatter([o[0] for o in obs], [o[1] for o in obs], s=42, facecolor=BG,
-                       edgecolor=INK, linewidth=1.4, zorder=5, label="실측 농도")
-    ax.set_xlim(0, horizon); ax.set_ylim(0, max(1.25, cs.max()*1.12))
-    ax.set_xlabel("투여 시작 후 시간 (h)"); ax.set_ylabel("농도 (IU/mL)")
-    for sp in ("top", "right"): ax.spines[sp].set_visible(False)
-    lg = ax.legend(frameon=False, fontsize=9, loc="upper right")
-    for t_ in lg.get_texts(): t_.set_color(MUTE)
-    st.pyplot(fig, use_container_width=True)
+        fig.add_shape(type="rect", x0=per["t0"], x1=t1, y0=per["lo"], y1=per["hi"],
+                      fillcolor=TEAL, opacity=.15, line_width=0, layer="below")
+        for y in (per["lo"], per["hi"]):
+            fig.add_shape(type="line", x0=per["t0"], x1=t1, y0=y, y1=y,
+                          line=dict(color=TEAL, width=1.1), opacity=.55, layer="below")
+        if per["t0"] > 0:
+            fig.add_shape(type="line", x0=per["t0"], x1=per["t0"], y0=0, y1=1, yref="paper",
+                          line=dict(color=LINE, width=1, dash="dot"), layer="below")
+        fig.add_annotation(x=(per["t0"] + t1) / 2, y=0.94, yref="paper", yanchor="top",
+                           text=f"{per['name']} · 목표 {per['lo']:.2f}–{per['hi']:.2f}",
+                           showarrow=False, font=dict(color=TEAL, size=11, family=KRFONT))
+
+    if env is not None:
+        pt, pc, tt, tc = env
+        fig.add_trace(go.Scatter(x=np.concatenate([pt, tt[::-1]]),
+                                 y=np.concatenate([pc, tc[::-1]]),
+                                 fill="toself", fillcolor="rgba(224,128,142,0.13)",
+                                 line=dict(width=0), hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=pt, y=pc, mode="lines", name="투여 직후 최고",
+                                 line=dict(color=OX, width=1.2), opacity=.45 if zoomed else .8,
+                                 hovertemplate="최고 %{y:.2f}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=tt, y=tc, mode="lines", name="투여 직전 최저",
+                                 line=dict(color=OX, width=1.8 if zoomed else 2.8),
+                                 opacity=.6 if zoomed else 1.0,
+                                 hovertemplate="최저 %{y:.2f}<extra></extra>"))
+        bad = [(t_, c_) for t_, c_ in zip(tt, tc) if c_ < period_at(t_)["lo"] * 0.97]
+        if bad:
+            fig.add_trace(go.Scatter(x=[b[0] for b in bad], y=[b[1] for b in bad],
+                                     mode="markers", name="목표 미달 시점",
+                                     marker=dict(color=AMB, size=9, symbol="triangle-down",
+                                                 line=dict(color=BG, width=1.5)),
+                                     hovertemplate="목표 미달 %{y:.2f}<extra></extra>"))
+
+    fig.add_trace(go.Scatter(x=grid, y=cs, mode="lines",
+                             name="실제 곡선" if env is not None else "예측 농도",
+                             line=dict(color=OX,
+                                       width=(2.0 if zoomed else 1.1) if env is not None else 2.2),
+                             opacity=(0.95 if zoomed else 0.40) if env is not None else 1.0,
+                             hovertemplate="실제 %{y:.2f} IU/mL<extra></extra>"))
+    if cp is not None:
+        fig.add_trace(go.Scatter(x=grid, y=cp, mode="lines", name="보정 전 집단 예측",
+                                 line=dict(color=GHOST, width=1.6, dash="dash"),
+                                 hovertemplate="보정 전 %{y:.2f}<extra></extra>"))
+    if obs:
+        fig.add_trace(go.Scatter(x=[o[0] for o in obs], y=[o[1] for o in obs],
+                                 mode="markers", name="실측 농도",
+                                 marker=dict(color=INK, size=10, line=dict(color=BG, width=2)),
+                                 hovertemplate="실측 %{y:.2f}<extra></extra>"))
+
+    fig.update_layout(height=440, margin=dict(l=10, r=10, t=52, b=10),
+                      paper_bgcolor=BG, plot_bgcolor=BG,
+                      font=dict(family=KRFONT, color=MUTE, size=12),
+                      hovermode="x unified",
+                      hoverlabel=dict(bgcolor=PANEL, bordercolor=LINE,
+                                      font=dict(color=INK, family=KRFONT, size=12)),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                  xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
+                                  font=dict(color=MUTE, size=11, family=KRFONT)))
+    fig.update_xaxes(title_text="투여 시작 후 시간 (h)", range=list(xr), gridcolor=LINE,
+                     zeroline=False, showspikes=True, spikecolor=MUTE, spikethickness=1,
+                     spikedash="dot", spikemode="across", ticksuffix=" h",
+                     hoverformat=".1f",
+                     rangeslider=dict(visible=True, thickness=0.10, bgcolor=PANEL,
+                                      bordercolor=LINE, borderwidth=1, range=[0, horizon]))
+    fig.update_yaxes(title_text="농도 (IU/mL)", range=[0, ymax], gridcolor=LINE,
+                     zeroline=False, hoverformat=".2f")
+    st.plotly_chart(fig, use_container_width=True,
+                    config=dict(displaylogo=False, scrollZoom=True, doubleClick="reset",
+                                modeBarButtonsToRemove=["select2d", "lasso2d"]))
 
     st.subheader("권장 투여 계획")
     st.markdown(f"**로딩 용량** {load:,.0f} IU · {load/wt:.1f} IU/kg")
@@ -273,6 +336,56 @@ with c2:
                     + (f"  ·  {p['hold']:.0f}시간 휴약 후 시작" if p.get("hold", 0) > 0.2 else ""))
         st.markdown(f"- {per['name']} · {per['span']} · 목표 {per['lo']:.2f}–{per['hi']:.2f} — {body}")
 
+    st.subheader("투여 시각과 용량")
+    if mode == "bolus":
+        ds = [d for d in doses if d["t"] <= horizon]
+        rows = []
+        for i, d in enumerate(ds):
+            if i == 0:
+                trough, judge = None, "—"
+            else:
+                seg = np.linspace(ds[i-1]["t"], d["t"], 80)
+                trough = float(conc(P, doses, infs, seg).min())
+                per = period_at(d["t"])
+                judge = "⚠ 미달" if trough < per["lo"]*0.97 else "유지"
+            rows.append({"회차": "로딩" if d.get("label") == "로딩" else str(i),
+                         "투여 시각": f"{d['t']:.0f} h", 
+                         "경과": f"{int(d['t'])//24}일 {int(d['t'])%24}시간",
+                         "용량 (IU)": f"{d['amt']:,.0f}",
+                         "IU/kg": f"{d['amt']/wt:.1f}",
+                         "직전 최저 농도": "—" if trough is None else f"{trough:.2f}",
+                         "판정": judge})
+        df = pd.DataFrame(rows)
+        total = sum(d["amt"] for d in ds)
+    else:
+        rows = [{"구간": f"{d['t']:.0f} h · 로딩", "속도 (IU/h)": "—",
+                 "구간 총량 (IU)": f"{d['amt']:,.0f}"} for d in doses if d["t"] <= horizon]
+        for f in infs:
+            if f["t0"] >= horizon: continue
+            t1 = min(f["t1"], horizon)
+            rows.append({"구간": f"{f['t0']:.0f} – {t1:.0f} h",
+                         "속도 (IU/h)": f"{f['rate']:,.0f}",
+                         "구간 총량 (IU)": f"{f['rate']*(t1-f['t0']):,.0f}"})
+        df = pd.DataFrame(rows)
+        total = (sum(d["amt"] for d in doses if d["t"] <= horizon)
+                 + sum(f["rate"]*(min(f["t1"], horizon)-f["t0"]) for f in infs if f["t0"] < horizon))
+    st.dataframe(df, use_container_width=True, hide_index=True,
+                 height=min(430, 36*len(df) + 42))
+    st.caption(f"관찰 {horizon:.0f}시간 총 투여량 **{total:,.0f} IU** · {total/wt:,.0f} IU/kg"
+               f"  ·  약값 어림 {total*627/10000:,.0f}만 원 (IU당 627원)")
+    st.download_button("투여 계획 내려받기 (CSV)", df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="투여계획.csv", mime="text/csv")
+
+    with st.expander("농도 표로 보기 (1시간 간격)"):
+        th = np.arange(0, horizon + 1e-9, 1.0)
+        ch = conc(P, doses, infs, th)
+        st.dataframe(pd.DataFrame({
+            "시간 (h)": th.astype(int), "농도 (IU/mL)": np.round(ch, 3),
+            "구간": [period_at(t)["name"] for t in th],
+            "판정": ["미달" if c < period_at(t)["lo"]*0.97 else
+                     ("초과" if c > period_at(t)["hi"]*1.15 else "유지") for t, c in zip(th, ch)]}),
+            use_container_width=True, hide_index=True, height=320)
+
     st.subheader("추정 파라미터")
     k = st.columns(4)
     for col, lab, val, u in zip(k, ["CL", "V1", "Q", "V2"], z, ["mL/h", "mL", "mL/h", "mL"]):
@@ -283,4 +396,4 @@ with c2:
 
 st.divider()
 st.caption("시뮬레이션 데이터로 학습한 재현 연구용 도구입니다. 실제 진료 판단에 사용할 수 없습니다. · "
-           "Janssen et al. CPT:PSP 2022;11:934–945 · Hazendonk et al. Thromb Haemost 2016;116(4):639–650")
+           "Janssen et al. CPT:PSP 2022;11:934–945 · Hazendonk et al. Haematologica 2016;101(10):1159–1169")
