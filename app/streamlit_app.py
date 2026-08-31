@@ -13,12 +13,28 @@ from scipy.optimize import minimize
 st.set_page_config(page_title="응고인자 투여 설계", layout="wide")
 
 # ---------- 한글 폰트 ----------
-for _p in ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-           "C:/Windows/Fonts/malgun.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc"]:
-    try:
-        fm.fontManager.addfont(_p)
-        plt.rcParams["font.family"] = fm.FontProperties(fname=_p).get_name(); break
-    except Exception: pass
+import glob
+
+def _setup_korean_font():
+    cands = []
+    for pat in ("/usr/share/fonts/truetype/nanum/Nanum*.ttf",
+                "/usr/share/fonts/**/NanumGothic*.ttf",
+                "/usr/share/fonts/**/NotoSansCJK*.ot[fc]",
+                "/usr/share/fonts/**/NotoSansKR*.[ot]tf",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "C:/Windows/Fonts/malgun.ttf",
+                "/System/Library/Fonts/AppleSDGothicNeo.ttc"):
+        cands += sorted(glob.glob(pat, recursive=True))
+    for _p in cands:
+        try:
+            fm.fontManager.addfont(_p)
+            plt.rcParams["font.family"] = fm.FontProperties(fname=_p).get_name()
+            return True
+        except Exception:
+            continue
+    return False
+
+_setup_korean_font()
 plt.rcParams["axes.unicode_minus"] = False
 
 # ---------- 색 (다크 모드) ----------
