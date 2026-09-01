@@ -1,0 +1,64 @@
+{
+ "per_seed": [
+  {
+   "all": 84.8,
+   "adult": 96.7,
+   "child": 61.2,
+   "epoch": 2700,
+   "train_adult": 82,
+   "train_child": 38,
+   "test_adult": 253,
+   "test_child": 127
+  },
+  {
+   "all": 84.1,
+   "adult": 99.3,
+   "child": 56.4,
+   "epoch": 2050,
+   "train_adult": 90,
+   "train_child": 30,
+   "test_adult": 245,
+   "test_child": 135
+  },
+  {
+   "all": 88.2,
+   "adult": 95.3,
+   "child": 72.9,
+   "epoch": 2400,
+   "train_adult": 77,
+   "train_child": 43,
+   "test_adult": 258,
+   "test_child": 122
+  },
+  {
+   "all": 87.9,
+   "adult": 98.7,
+   "child": 66.5,
+   "epoch": 2100,
+   "train_adult": 82,
+   "train_child": 38,
+   "test_adult": 253,
+   "test_child": 127
+  },
+  {
+   "all": 88.6,
+   "adult": 99.3,
+   "child": 64.8,
+   "epoch": 2350,
+   "train_adult": 73,
+   "train_child": 47,
+   "test_adult": 262,
+   "test_child": 118
+  }
+ ],
+ "mean": {
+  "all": 86.7,
+  "adult": 97.9,
+  "child": 64.4
+ },
+ "sd": {
+  "all": 1.9,
+  "adult": 1.6,
+  "child": 5.5
+ }
+}
